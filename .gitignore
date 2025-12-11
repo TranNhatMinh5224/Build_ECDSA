@@ -29,3 +29,6 @@ codesigning.jks
 /prov/src/main/core/
 
 bc-build.user.properties
+
+custom_curves/
+*.params
