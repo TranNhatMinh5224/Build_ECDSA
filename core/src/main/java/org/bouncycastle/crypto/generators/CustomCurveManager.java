@@ -1,379 +1,491 @@
 package org.bouncycastle.crypto.generators;
 
-import java.io.*;
 import java.math.BigInteger;
 import java.security.SecureRandom;
-import java.util.Hashtable;
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
+import java.util.concurrent.TimeUnit;
+
 import org.bouncycastle.crypto.params.ECDomainParameters;
-import org.bouncycastle.crypto.signers.ECDSASigner;
-import org.bouncycastle.crypto.AsymmetricCipherKeyPair;
-import org.bouncycastle.crypto.generators.ECKeyPairGenerator;
-import org.bouncycastle.crypto.params.ECKeyGenerationParameters;
-import org.bouncycastle.jce.spec.ECParameterSpec;
 import org.bouncycastle.math.ec.ECCurve;
 import org.bouncycastle.math.ec.ECPoint;
+import org.bouncycastle.util.BigIntegers;
 import org.bouncycastle.util.encoders.Hex;
 
-/**
- * Hệ thống quản lý Custom Curve:
- * 1. Sinh đường cong ngẫu nhiên
- * 2. Verify và lưu lại
- * 3. Đăng ký như named curve
- * 4. Sử dụng lại các lần sau
- */
 public class CustomCurveManager
 {
-    private static final Hashtable<String, ECParameterSpec> registeredCurves = new Hashtable<>();
-    private static final String CURVE_DIR = "custom_curves/";
-    
     /**
-     * Bước 1: Sinh đường cong ngẫu nhiên và verify
-     * 
-     * @param curveName tên đường cong (ví dụ: "MyCustomCurve-256")
-     * @param p số nguyên tố (từ thuật toán 1)
-     * @param a hệ số a (từ thuật toán 2)
-     * @param b hệ số b (từ thuật toán 2)
-     * @param random nguồn random
-     * @return true nếu verify thành công và đã lưu
+     * Kết quả trả về từ SageMath
      */
-    public static boolean generateAndRegisterCurve(
-        String curveName,
-        BigInteger p,
-        BigInteger a,
-        BigInteger b,
-        SecureRandom random)
-    {
+    public static class SageMathResult {
+        public BigInteger n;
+        public BigInteger h;
+        public BigInteger Gx;
+        public BigInteger Gy;
+        public BigInteger Ncurve;
+        public boolean nIsPrime;
+        public boolean hIsOne;
+        public String error;
+
+        public boolean hasError() {
+            return error != null && !error.trim().isEmpty() && !"none".equalsIgnoreCase(error.trim());
+        }
+    }
+
+    /**
+     * PHASE A: Sinh Raw Curve (p, a, b, seed).
+     * Kết quả chưa dùng được ngay vì thiếu n, h, G.
+     */
+    public static CustomECGenerator.RawCurveData generateRawCurveSteps(int L, int N) {
+        SecureRandom random = new SecureRandom();
+        System.out.println("--- STEP 1: Generating Safe Prime & Raw Curve ---");
+
+        // 1. Sinh Safe Prime p
+        BigInteger[] pq = CustomECGenerator.generateSafePrime(L, N, random, 80);
+        BigInteger p = pq[0];
+
+        // 2. Sinh a, b từ seed (ANSI X9.62, a = -3 mod p)
+        CustomECGenerator.RawCurveData raw = CustomECGenerator.generateRawCurve(p, random);
+
+        System.out.println("Raw Curve Generated Successfully!");
+        printHex("p", raw.p);
+        printHex("a", raw.a);
+        printHex("b", raw.b);
+        System.out.println("Seed: " + Hex.toHexString(raw.seedE));
+        System.out.println("--> NEXT ACTION: Use external tool (SEA / Sage) to find order 'n' and G.");
+
+        return raw;
+    }
+
+    /**
+     * PHASE B: Gọi SageMath script để tính order và generator
+     * FIX: truyền a.mod(p), b.mod(p) để tránh a = -3 gây lỗi parse.
+     * FIX: timeout 300s để tránh treo.
+     * FIX: kiểm tra script path tồn tại.
+     */
+    public static SageMathResult callSageMathForOrder(
+            BigInteger p, BigInteger a, BigInteger b, String sageScriptPath) {
+
+        SageMathResult result = new SageMathResult();
+
         try {
-            // 1. Sinh domain parameters
-            System.out.println("Đang sinh đường cong: " + curveName + "...");
-            ECDomainParameters domainParams = CustomECGenerator.generateDomainParameters(
-                p, a, b, random);
-            
-            // 2. Verify đầy đủ
-            if (!verifyCurve(domainParams)) {
-                System.out.println("❌ Verify thất bại!");
-                return false;
+            // Default path
+            if (sageScriptPath == null) {
+                sageScriptPath = "test/scripts/compute_order_complete.py";
             }
-            
-            System.out.println("✅ Verify thành công!");
-            
-            // 3. Convert sang ECParameterSpec
-            ECParameterSpec spec = new ECParameterSpec(
-                domainParams.getCurve(),
-                domainParams.getG(),
-                domainParams.getN(),
-                domainParams.getH(),
-                domainParams.getSeed()
+
+            File scriptFile = new File(sageScriptPath);
+            if (!scriptFile.exists()) {
+                result.error = "Sage script not found: " + sageScriptPath;
+                return result;
+            }
+
+            // Đưa a, b về mod p trước khi truyền
+            BigInteger aMod = a.mod(p);
+            BigInteger bMod = b.mod(p);
+
+            // WSL path for the script (SageMath runs inside Ubuntu-20.04)
+            String wslScript = "/mnt/d/Build_ECDSA/test/scripts/compute_order_complete.py";
+
+            String cmd = String.format(
+                "sage %s %s %s %s",
+                wslScript,
+                p.toString(16),
+                aMod.toString(16),
+                bMod.toString(16)
             );
-            
-            // 4. Lưu vào memory (đăng ký)
-            registeredCurves.put(curveName, spec);
-            
-            // 5. Lưu vào file để dùng lại sau
-            saveToFile(curveName, domainParams);
-            
-            System.out.println("✅ Đã lưu và đăng ký đường cong: " + curveName);
-            printCurveInfo(curveName, domainParams);
-            
-            return true;
-            
-        } catch (Exception e) {
-            System.err.println("❌ Lỗi khi sinh đường cong: " + e.getMessage());
-            e.printStackTrace();
-            return false;
-        }
-    }
-    
-    /**
-     * Bước 2: Verify đường cong đầy đủ
-     */
-    private static boolean verifyCurve(ECDomainParameters params)
-    {
-        try {
-            // 1. Verify G không phải điểm vô cực
-            if (params.getG().isInfinity()) {
-                System.out.println("  ❌ G là điểm vô cực");
-                return false;
-            }
-            
-            // 2. Verify G nằm trên đường cong
-            if (!params.getG().isValid()) {
-                System.out.println("  ❌ G không nằm trên đường cong");
-                return false;
-            }
-            
-            // 3. Verify n * G = O
-            ECPoint verify = params.getG().multiply(params.getN());
-            if (!verify.isInfinity()) {
-                System.out.println("  ❌ n * G ≠ O");
-                return false;
-            }
-            
-            // 4. Verify không có order nhỏ hơn
-            if (!hasCorrectOrder(params.getG(), params.getN())) {
-                System.out.println("  ❌ G có order nhỏ hơn n");
-                return false;
-            }
-            
-            // 5. Test sinh key pair
-            ECKeyPairGenerator keyGen = new ECKeyPairGenerator();
-            ECKeyGenerationParameters keyGenParams = 
-                new ECKeyGenerationParameters(params, new SecureRandom());
-            keyGen.init(keyGenParams);
-            
-            AsymmetricCipherKeyPair testPair = keyGen.generateKeyPair();
-            if (testPair == null) {
-                System.out.println("  ❌ Không thể sinh key pair");
-                return false;
-            }
-            
-            // 6. Test ECDSA signing
-            if (!testECDSASigning(params)) {
-                System.out.println("  ❌ Test ECDSA signing thất bại");
-                return false;
-            }
-            
-            System.out.println("  ✅ Tất cả verify đều pass!");
-            return true;
-            
-        } catch (Exception e) {
-            System.out.println("  ❌ Lỗi verify: " + e.getMessage());
-            return false;
-        }
-    }
-    
-    /**
-     * Kiểm tra điểm có order chính xác
-     */
-    private static boolean hasCorrectOrder(ECPoint point, BigInteger targetOrder)
-    {
-        // Verify: targetOrder * point = O
-        ECPoint verify = point.multiply(targetOrder);
-        if (!verify.isInfinity()) {
-            return false;
-        }
-        
-        // Kiểm tra các ước số nhỏ
-        BigInteger[] smallPrimes = {
-            BigInteger.valueOf(2), BigInteger.valueOf(3), BigInteger.valueOf(5),
-            BigInteger.valueOf(7), BigInteger.valueOf(11), BigInteger.valueOf(13)
-        };
-        
-        for (BigInteger prime : smallPrimes) {
-            if (targetOrder.mod(prime).equals(BigInteger.ZERO)) {
-                BigInteger subOrder = targetOrder.divide(prime);
-                ECPoint test = point.multiply(subOrder);
-                if (test.isInfinity()) {
-                    return false; // Có order nhỏ hơn
+
+            // Call Sage via WSL (Ubuntu-20.04)
+            ProcessBuilder pb = new ProcessBuilder(
+                "wsl",
+                "-d", "Ubuntu-20.04",
+                "bash", "-lc",
+                cmd
+            );
+            // pb.directory(new File(".")); // optional: set working dir
+
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+
+            // Đọc output
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
                 }
             }
-        }
-        
-        return true;
-    }
-    
-    /**
-     * Test ECDSA signing với đường cong
-     */
-    private static boolean testECDSASigning(ECDomainParameters params)
-    {
-        try {
-            // Sinh key pair
-            ECKeyPairGenerator keyGen = new ECKeyPairGenerator();
-            ECKeyGenerationParameters keyGenParams = 
-                new ECKeyGenerationParameters(params, new SecureRandom());
-            keyGen.init(keyGenParams);
-            
-            AsymmetricCipherKeyPair pair = keyGen.generateKeyPair();
-            
-            // Test signing (dùng lightweight API)
-            byte[] message = "Test message".getBytes();
-            ECDSASigner signer = new ECDSASigner();
-            signer.init(true, pair.getPrivate());
-            
-            BigInteger[] signature = signer.generateSignature(message);
-            
-            // Test verification
-            signer.init(false, pair.getPublic());
-            boolean verified = signer.verifySignature(message, signature[0], signature[1]);
-            
-            return verified;
-            
+
+            // Timeout 300 giây
+            boolean ok = process.waitFor(3600, TimeUnit.SECONDS);
+            if (!ok) {
+                process.destroyForcibly();
+                result.error = "SageMath timeout";
+                return result;
+            }
+
+            int exitCode = process.exitValue();
+            if (exitCode != 0) {
+                result.error = "SageMath process exited with code: " + exitCode;
+                return result;
+            }
+
+            // Parse JSON output (một dòng) bằng regex
+            String jsonStr = output.toString().trim();
+            result = parseSageMathJSON(jsonStr);
+
         } catch (Exception e) {
-            return false;
-        }
-    }
-    
-    /**
-     * Bước 3: Lưu vào file
-     */
-    private static void saveToFile(String curveName, ECDomainParameters params)
-    {
-        try {
-            // Tạo thư mục nếu chưa có
-            File dir = new File(CURVE_DIR);
-            if (!dir.exists()) {
-                dir.mkdirs();
-            }
-            
-            // Lưu vào file
-            File file = new File(CURVE_DIR + curveName + ".params");
-            try (ObjectOutputStream oos = new ObjectOutputStream(
-                new FileOutputStream(file))) {
-                
-                // Lưu các tham số
-                CurveParams curveParams = new CurveParams();
-                curveParams.p = params.getCurve().getQ().toByteArray();
-                curveParams.a = params.getCurve().getA().toBigInteger().toByteArray();
-                curveParams.b = params.getCurve().getB().toBigInteger().toByteArray();
-                curveParams.Gx = params.getG().getAffineXCoord().toBigInteger().toByteArray();
-                curveParams.Gy = params.getG().getAffineYCoord().toBigInteger().toByteArray();
-                curveParams.n = params.getN().toByteArray();
-                curveParams.h = params.getH().toByteArray();
-                curveParams.seed = params.getSeed();
-                
-                oos.writeObject(curveParams);
-            }
-            
-            System.out.println("  💾 Đã lưu vào: " + file.getAbsolutePath());
-            
-        } catch (Exception e) {
-            System.err.println("  ⚠️  Không thể lưu file: " + e.getMessage());
-        }
-    }
-    
-    /**
-     * Bước 4: Load từ file và đăng ký lại
-     */
-    public static boolean loadAndRegisterCurve(String curveName)
-    {
-        try {
-            File file = new File(CURVE_DIR + curveName + ".params");
-            if (!file.exists()) {
-                System.out.println("❌ File không tồn tại: " + file.getAbsolutePath());
-                return false;
-            }
-            
-            // Load từ file
-            CurveParams curveParams;
-            try (ObjectInputStream ois = new ObjectInputStream(
-                new FileInputStream(file))) {
-                curveParams = (CurveParams)ois.readObject();
-            }
-            
-            // Tạo lại ECDomainParameters
-            ECCurve.Fp curve = new ECCurve.Fp(
-                new BigInteger(1, curveParams.p),
-                new BigInteger(1, curveParams.a),
-                new BigInteger(1, curveParams.b),
-                null, null
-            );
-            
-            ECPoint G = curve.createPoint(
-                new BigInteger(1, curveParams.Gx),
-                new BigInteger(1, curveParams.Gy)
-            );
-            
-            ECDomainParameters domainParams = new ECDomainParameters(
-                curve,
-                G,
-                new BigInteger(1, curveParams.n),
-                new BigInteger(1, curveParams.h),
-                curveParams.seed
-            );
-            
-            // Verify lại
-            if (!verifyCurve(domainParams)) {
-                System.out.println("❌ Verify thất bại khi load!");
-                return false;
-            }
-            
-            // Convert và đăng ký
-            ECParameterSpec spec = new ECParameterSpec(
-                domainParams.getCurve(),
-                domainParams.getG(),
-                domainParams.getN(),
-                domainParams.getH(),
-                domainParams.getSeed()
-            );
-            
-            registeredCurves.put(curveName, spec);
-            
-            System.out.println("✅ Đã load và đăng ký: " + curveName);
-            printCurveInfo(curveName, domainParams);
-            
-            return true;
-            
-        } catch (Exception e) {
-            System.err.println("❌ Lỗi khi load: " + e.getMessage());
+            result.error = "Error calling SageMath: " + e.getMessage();
             e.printStackTrace();
-            return false;
         }
+
+        return result;
     }
-    
+
     /**
-     * Bước 5: Lấy đường cong đã đăng ký (dùng như named curve)
+     * Helper: lấy value theo key từ JSON một dòng.
      */
-    public static ECParameterSpec getCurve(String curveName)
-    {
-        // Thử load từ memory trước
-        ECParameterSpec spec = registeredCurves.get(curveName);
-        if (spec != null) {
-            return spec;
+    private static String pickString(String json, String key) {
+        Matcher m = Pattern.compile(
+            "\"" + Pattern.quote(key) + "\"\\s*:\\s*(null|\"(.*?)\"|[^,}\\s]+)"
+        ).matcher(json);
+        if (!m.find()) return null;
+        String raw = m.group(1);
+        if ("null".equals(raw)) return null;
+        if (raw.startsWith("\"")) return m.group(2); // value inside quotes
+        return raw; // bare value
+    }
+
+    /**
+     * Parse JSON output từ SageMath (one-line).
+     */
+    private static SageMathResult parseSageMathJSON(String jsonStr) {
+        SageMathResult result = new SageMathResult();
+        try {
+            jsonStr = jsonStr.replaceAll("\\s+", " ").trim();
+
+            String nStr      = pickString(jsonStr, "n");
+            String hStr      = pickString(jsonStr, "h");
+            String gxStr     = pickString(jsonStr, "Gx");
+            String gyStr     = pickString(jsonStr, "Gy");
+            String ncStr     = pickString(jsonStr, "Ncurve");
+            String nPrimeStr = pickString(jsonStr, "n_is_prime");
+            String hOneStr   = pickString(jsonStr, "h_is_one");
+            String errStr    = pickString(jsonStr, "error");
+
+            if (nStr != null)      result.n = new BigInteger(nStr, 16);
+            if (hStr != null)      result.h = new BigInteger(hStr);
+            if (gxStr != null)     result.Gx = new BigInteger(gxStr, 16);
+            if (gyStr != null)     result.Gy = new BigInteger(gyStr, 16);
+            if (ncStr != null)     result.Ncurve = new BigInteger(ncStr, 16);
+            if (nPrimeStr != null) result.nIsPrime = Boolean.parseBoolean(nPrimeStr);
+            if (hOneStr != null)   result.hIsOne = Boolean.parseBoolean(hOneStr);
+            result.error = errStr; // có thể null
+
+        } catch (Exception e) {
+            result.error = "Error parsing JSON: " + e.getMessage();
         }
-        
-        // Nếu không có, thử load từ file
-        if (loadAndRegisterCurve(curveName)) {
-            return registeredCurves.get(curveName);
+        return result;
+    }
+
+    /**
+     * PHASE C: Finalize curve với G từ SageMath (strict)
+     * Checklist: verify seed, n prime, h = 1, G valid, n*G = O.
+     */
+    public static ECDomainParameters finalizeCurveStrictWithG(
+            CustomECGenerator.RawCurveData raw,
+            BigInteger n,
+            BigInteger h,
+            BigInteger Gx,
+            BigInteger Gy) {
+
+        System.out.println("\n--- STEP 2: Finalizing & Validating Curve (with G from SageMath) ---");
+
+        if (n == null || h == null || Gx == null || Gy == null) {
+            throw new IllegalArgumentException("REJECT: Missing parameters from SageMath.");
         }
+
+        BigInteger p = raw.p;
+        BigInteger a = raw.a;
+        BigInteger b = raw.b;
+
+        // 1) Verify seed -> (a,b)
+        if (!CustomECGenerator.verifyRandomCurveFp(p, raw.seedE, a, b)) {
+            throw new SecurityException("REJECT: Curve parameters a,b do not match seed!");
+        }
+
+        ECCurve.Fp curve = new ECCurve.Fp(p, a, b);
+
+        // 2) Tạo G
+        ECPoint G = curve.createPoint(Gx, Gy);
+
+        if (G.isInfinity()) {
+            throw new IllegalStateException("REJECT: G from SageMath is infinity!");
+        }
+        if (!G.isValid()) {
+            throw new IllegalStateException("REJECT: G from SageMath is not on curve!");
+        }
+
+        // 3) n prime
+        if (!n.isProbablePrime(40)) {
+            throw new IllegalArgumentException("REJECT: Provided order n is NOT prime.");
+        }
+
+        // 4) h == 1 (strict requirement)
+        if (!h.equals(BigInteger.ONE)) {
+            throw new IllegalArgumentException("REJECT: Cofactor h != 1. h = " + h);
+        }
+
+        // 5) n * G = O
+        if (!G.multiply(n).isInfinity()) {
+            throw new IllegalArgumentException("REJECT: Invalid order! n * G != O.");
+        }
+
+        System.out.println("All checks passed!");
+        System.out.println("Curve Validated and Registered Successfully!");
+        printHex("Gx", G.getAffineXCoord().toBigInteger());
+        printHex("Gy", G.getAffineYCoord().toBigInteger());
+        printHex("n ", n);
+        System.out.println("h : " + h.toString());
+
+        return new ECDomainParameters(curve, G, n, h, raw.seedE);
+    }
+
+    /**
+     * PRODUCTION WORKFLOW: Generate & Register curve tự động (chỉ nhận h=1, n prime)
+     * maxAttempts nên đặt cao (ví dụ 200) vì Ncurve prime hiếm.
+     * Tự động check file đã lưu trước, nếu có thì load luôn, không cần sinh lại.
+     */
+    public static ECDomainParameters generateAndRegisterCurve(
+            String curveName, int L, int N, int maxAttempts, String sageScriptPath) {
+
+        // Đường dẫn file lưu curve
+        String curveDir = "curves";
+        String curveFile = curveDir + "/" + curveName + ".json";
         
+        // BƯỚC 1: Kiểm tra file đã tồn tại chưa
+        try {
+            ECDomainParameters loaded = loadCurveFromFile(curveFile);
+            if (loaded != null) {
+                System.out.println("========================================");
+                System.out.println("Using existing curve from file: " + curveFile);
+                System.out.println("========================================");
+                return loaded;
+            }
+        } catch (Exception e) {
+            System.out.println("Could not load curve from file: " + e.getMessage());
+            System.out.println("Will generate new curve...");
+        }
+
+        // BƯỚC 2: Nếu chưa có file, sinh curve mới
+        System.out.println("========================================");
+        System.out.println("PRODUCTION WORKFLOW: Generate & Register Curve");
+        System.out.println("========================================");
+        System.out.println("Curve Name: " + curveName);
+        System.out.println("L (p bits): " + L);
+        System.out.println("N (q bits): " + N);
+        System.out.println("Max Attempts: " + maxAttempts);
+        System.out.println("Requirement: h = 1 (Ncurve must be prime)");
+        System.out.println();
+
+        SecureRandom random = new SecureRandom();
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            System.out.println("--- Attempt " + attempt + "/" + maxAttempts + " ---");
+
+            try {
+                // PHASE A
+                System.out.println("PHASE A: Generating raw curve...");
+                BigInteger[] pq = CustomECGenerator.generateSafePrime(L, N, random, 80);
+                BigInteger p = pq[0];
+                CustomECGenerator.RawCurveData raw = CustomECGenerator.generateRawCurve(p, random);
+
+                System.out.println("  Raw curve generated:");
+                printHex("  p", raw.p);
+                printHex("  a", raw.a);
+                printHex("  b", raw.b);
+
+                // PHASE B
+                System.out.println("\nPHASE B: Calling SageMath to compute order...");
+                SageMathResult sageResult = callSageMathForOrder(raw.p, raw.a, raw.b, sageScriptPath);
+
+                if (sageResult.hasError()) {
+                    System.out.println("  ERROR: " + sageResult.error);
+                    if (sageResult.error != null && sageResult.error.contains("h != 1")) {
+                        System.out.println("  → Ncurve is not prime, trying new seed...");
+                    }
+                    continue; // Thử seed khác
+                }
+
+                // Guard: đảm bảo không null trước khi in
+                if (sageResult.n == null || sageResult.h == null
+                    || sageResult.Gx == null || sageResult.Gy == null) {
+                    System.out.println("  ERROR: Missing fields from Sage output.");
+                    continue; // Thử seed khác
+                }
+
+                System.out.println("  SageMath result:");
+                printHex("  n", sageResult.n);
+                System.out.println("  h: " + sageResult.h);
+                printHex("  Gx", sageResult.Gx);
+                printHex("  Gy", sageResult.Gy);
+                System.out.println("  n is prime: " + sageResult.nIsPrime);
+                System.out.println("  h is one: " + sageResult.hIsOne);
+
+                // Chỉ nhận h=1 và n prime
+                if (!sageResult.hIsOne) {
+                    System.out.println("  REJECT: h != 1, trying new seed...");
+                    continue;
+                }
+                if (!sageResult.nIsPrime) {
+                    System.out.println("  REJECT: n is not prime, trying new seed...");
+                    continue;
+                }
+
+                // PHASE C
+                System.out.println("\nPHASE C: Finalizing curve...");
+                ECDomainParameters params = finalizeCurveStrictWithG(
+                    raw, sageResult.n, sageResult.h, sageResult.Gx, sageResult.Gy);
+
+                // BƯỚC 3: Lưu curve vào file
+                try {
+                    saveCurveToFile(params, curveName, curveFile);
+                } catch (IOException e) {
+                    System.err.println("Warning: Could not save curve to file: " + e.getMessage());
+                }
+
+                System.out.println("\nSUCCESS! Curve registered: " + curveName);
+                System.out.println("========================================");
+
+                return params;
+
+            } catch (Exception e) {
+                System.out.println("  ERROR in attempt " + attempt + ": " + e.getMessage());
+                e.printStackTrace();
+                continue; // Thử lại
+            }
+        }
+
+        System.out.println("\nFAILED: Could not generate curve with h=1 after " + maxAttempts + " attempts");
+        System.out.println("========================================");
         return null;
     }
-    
+
+    // Helper in Hex chuẩn
+    private static void printHex(String label, BigInteger val) {
+        System.out.println(label + ": " + Hex.toHexString(BigIntegers.asUnsignedByteArray(val)));
+    }
+
     /**
-     * Kiểm tra đường cong đã tồn tại chưa
+     * Lưu curve parameters vào file JSON
      */
-    public static boolean curveExists(String curveName)
-    {
-        // Kiểm tra trong memory
-        if (registeredCurves.containsKey(curveName)) {
-            return true;
+    public static void saveCurveToFile(ECDomainParameters params, String curveName, String filePath) throws IOException {
+        ECCurve.Fp curve = (ECCurve.Fp) params.getCurve();
+        BigInteger p = curve.getQ();  // modulus
+        BigInteger a = curve.getA().toBigInteger();
+        BigInteger b = curve.getB().toBigInteger();
+        BigInteger Gx = params.getG().getAffineXCoord().toBigInteger();
+        BigInteger Gy = params.getG().getAffineYCoord().toBigInteger();
+        BigInteger n = params.getN();
+        BigInteger h = params.getH();
+        byte[] seed = params.getSeed();
+        
+        // Tạo JSON string
+        StringBuilder json = new StringBuilder();
+        json.append("{\n");
+        json.append("  \"name\": \"").append(curveName).append("\",\n");
+        json.append("  \"p\": \"").append(p.toString(16)).append("\",\n");
+        json.append("  \"a\": \"").append(a.toString(16)).append("\",\n");
+        json.append("  \"b\": \"").append(b.toString(16)).append("\",\n");
+        json.append("  \"Gx\": \"").append(Gx.toString(16)).append("\",\n");
+        json.append("  \"Gy\": \"").append(Gy.toString(16)).append("\",\n");
+        json.append("  \"n\": \"").append(n.toString(16)).append("\",\n");
+        json.append("  \"h\": \"").append(h.toString()).append("\"");
+        if (seed != null && seed.length > 0) {
+            json.append(",\n  \"seed\": \"").append(Hex.toHexString(seed)).append("\"");
+        }
+        json.append("\n}");
+        
+        // Tạo thư mục nếu chưa có
+        File file = new File(filePath);
+        File parentDir = file.getParentFile();
+        if (parentDir != null && !parentDir.exists()) {
+            parentDir.mkdirs();
         }
         
-        // Kiểm tra file
-        File file = new File(CURVE_DIR + curveName + ".params");
-        return file.exists();
+        // Ghi file
+        Files.write(Paths.get(filePath), json.toString().getBytes(), 
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        
+        System.out.println("Curve saved to: " + filePath);
     }
-    
+
     /**
-     * In thông tin đường cong
+     * Load curve parameters từ file JSON
      */
-    private static void printCurveInfo(String curveName, ECDomainParameters params)
-    {
-        System.out.println("\n📊 Thông tin đường cong: " + curveName);
-        System.out.println("   p (hex): " + Hex.toHexString(params.getCurve().getQ().toByteArray()));
-        System.out.println("   a (hex): " + Hex.toHexString(params.getCurve().getA().toBigInteger().toByteArray()));
-        System.out.println("   b (hex): " + Hex.toHexString(params.getCurve().getB().toBigInteger().toByteArray()));
-        System.out.println("   Gx (hex): " + Hex.toHexString(params.getG().getAffineXCoord().toBigInteger().toByteArray()));
-        System.out.println("   Gy (hex): " + Hex.toHexString(params.getG().getAffineYCoord().toBigInteger().toByteArray()));
-        System.out.println("   n (hex): " + Hex.toHexString(params.getN().toByteArray()));
-        System.out.println("   h: " + params.getH());
-        System.out.println();
+    public static ECDomainParameters loadCurveFromFile(String filePath) throws IOException {
+        File file = new File(filePath);
+        if (!file.exists()) {
+            return null;
+        }
+        
+        // Đọc file JSON
+        String content = new String(Files.readAllBytes(Paths.get(filePath)));
+        
+        // Parse JSON
+        String pStr = extractJsonValue(content, "p");
+        String aStr = extractJsonValue(content, "a");
+        String bStr = extractJsonValue(content, "b");
+        String GxStr = extractJsonValue(content, "Gx");
+        String GyStr = extractJsonValue(content, "Gy");
+        String nStr = extractJsonValue(content, "n");
+        String hStr = extractJsonValue(content, "h");
+        String seedStr = extractJsonValue(content, "seed");
+        
+        if (pStr == null || aStr == null || bStr == null || GxStr == null || 
+            GyStr == null || nStr == null || hStr == null) {
+            throw new IOException("Invalid curve file: missing required fields");
+        }
+        
+        BigInteger p = new BigInteger(pStr, 16);
+        BigInteger a = new BigInteger(aStr, 16);
+        BigInteger b = new BigInteger(bStr, 16);
+        BigInteger Gx = new BigInteger(GxStr, 16);
+        BigInteger Gy = new BigInteger(GyStr, 16);
+        BigInteger n = new BigInteger(nStr, 16);
+        BigInteger h = new BigInteger(hStr);
+        byte[] seed = seedStr != null ? Hex.decode(seedStr) : null;
+        
+        // Tạo curve và domain parameters
+        ECCurve.Fp curve = new ECCurve.Fp(p, a, b);
+        ECPoint G = curve.createPoint(Gx, Gy);
+        
+        // Verify
+        if (!G.isValid()) {
+            throw new IOException("Invalid curve file: G is not on curve");
+        }
+        if (!G.multiply(n).isInfinity()) {
+            throw new IOException("Invalid curve file: n*G != O");
+        }
+        
+        System.out.println("Curve loaded from: " + filePath);
+        return new ECDomainParameters(curve, G, n, h, seed);
     }
-    
+
     /**
-     * Class để lưu tham số đường cong
+     * Helper: Extract value từ JSON string
      */
-    private static class CurveParams implements Serializable
-    {
-        byte[] p;
-        byte[] a;
-        byte[] b;
-        byte[] Gx;
-        byte[] Gy;
-        byte[] n;
-        byte[] h;
-        byte[] seed;
+    private static String extractJsonValue(String json, String key) {
+        Pattern pattern = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*\"([^\"]+)\"");
+        Matcher matcher = pattern.matcher(json);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        return null;
     }
 }
-

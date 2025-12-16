@@ -32,3 +32,8 @@ bc-build.user.properties
 
 custom_curves/
 *.params
+
+# Build logs
+build_logs/
+logs/
+*.log

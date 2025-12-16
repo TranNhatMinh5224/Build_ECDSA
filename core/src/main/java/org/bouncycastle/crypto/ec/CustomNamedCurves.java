@@ -6,6 +6,7 @@ import java.util.Hashtable;
 import java.util.Vector;
 
 import org.bouncycastle.asn1.ASN1ObjectIdentifier;
+import org.bouncycastle.asn1.custom.CustomCurveObjectIdentifiers;
 import org.bouncycastle.asn1.gm.GMObjectIdentifiers;
 import org.bouncycastle.asn1.sec.SECObjectIdentifiers;
 import org.bouncycastle.asn1.x9.X9ECParameters;
@@ -782,6 +783,32 @@ public class CustomNamedCurves
         }
     };
 
+    /*
+     * MyCustomCurve-256 (Custom Safe Prime Curve)
+     * Hardcoded parameters to avoid runtime file dependencies.
+     */
+    static X9ECParametersHolder myCustomCurve256 = new X9ECParametersHolder()
+    {
+        protected ECCurve createCurve()
+        {
+            BigInteger p = new BigInteger("b63c11d43e09b729962d47edb6ddab7a929ed7aa6e7f01da8ca3f72022037373", 16);
+            BigInteger a = new BigInteger("b63c11d43e09b729962d47edb6ddab7a929ed7aa6e7f01da8ca3f72022037370", 16);
+            BigInteger b = new BigInteger("9ced8b5e0375c92d55fff25924233e0ca2338392d8c8bcc2d8b42b0fe1418a95", 16);
+            return configureCurve(new ECCurve.Fp(p, a, b));
+        }
+
+        protected X9ECParameters createParameters()
+        {
+            ECCurve curve = getCurve();
+            X9ECPoint G = configureBasepoint(curve,
+                "0461fec3112fa5e7aa1779cc56bcf2bdd7326982cc69693bc92908fedf007dffd90890dd8c564d7601b0a8e4ce5aba2ad6a3bad24deb8d1e1b6f18d0beb70e1c1d");
+            BigInteger n = new BigInteger("b63c11d43e09b729962d47edb6ddab7ba1a80e44874c71dfbf9419280fa3d971", 16);
+            BigInteger h = BigInteger.ONE;
+            byte[] seed = null;
+            return new X9ECParameters(curve, G, n, h, seed);
+        }
+    };
+
 
     static final Hashtable nameToCurve = new Hashtable();
     static final Hashtable nameToOID = new Hashtable();
@@ -859,6 +886,9 @@ public class CustomNamedCurves
         defineCurveWithOID("sect571r1", SECObjectIdentifiers.sect571r1, sect571r1);
 
         defineCurveWithOID("sm2p256v1", GMObjectIdentifiers.sm2p256v1, sm2p256v1);
+
+        // Custom curve
+        defineCurveWithOID("MyCustomCurve-256", CustomCurveObjectIdentifiers.myCustomCurve256, myCustomCurve256);
 
         defineCurveAlias("B-163", SECObjectIdentifiers.sect163r2);
         defineCurveAlias("B-233", SECObjectIdentifiers.sect233r1);

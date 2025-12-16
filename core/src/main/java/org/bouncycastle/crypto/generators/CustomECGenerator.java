@@ -1,21 +1,10 @@
 package org.bouncycastle.crypto.generators;
 
 import java.math.BigInteger;
-import java.security.MessageDigest;
 import java.security.SecureRandom;
 import org.bouncycastle.crypto.digests.SHA1Digest;
-import org.bouncycastle.crypto.params.ECDomainParameters;
-import org.bouncycastle.math.Primes;
-import org.bouncycastle.math.ec.ECCurve;
-import org.bouncycastle.math.ec.ECPoint;
 import org.bouncycastle.util.BigIntegers;
 
-/**
- * Custom EC Generator - Chứa 3 thuật toán:
- * 1. Sinh số nguyên tố an toàn (safe prime)
- * 2. Sinh đường cong ngẫu nhiên từ prime
- * 3. Sinh domain parameters (G, n, h) với verify đầy đủ
- */
 public class CustomECGenerator
 {
     private static final BigInteger ZERO = BigInteger.valueOf(0);
@@ -25,630 +14,347 @@ public class CustomECGenerator
     private static final BigInteger FOUR = BigInteger.valueOf(4);
     private static final BigInteger TWENTY_SEVEN = BigInteger.valueOf(27);
 
-    /**
-     * Thuật toán 1: Sinh safe prime p và q (q | (p-1))
-     * Port từ sinh-so-an-toan.ipynb - Algorithm 3
-     * 
-     * @param L bit length của p
-     * @param N bit length của q
-     * @param random nguồn random
-     * @return [p, q] nếu thành công, null nếu thất bại
-     */
-    public static BigInteger[] generateSafePrime(int L, int N, SecureRandom random)
+    // =================================================================
+    // PHẦN 1: SAFE PRIME GENERATION (ISO/IEC 11770-4 - Alg 3 STRICT)
+    // Sinh p = 2 * q * q1 *...* qk + 1, đảm bảo qi >= q.
+    // =================================================================
+
+    public static BigInteger[] generateSafePrime(int L, int N, SecureRandom random, int certainty)
     {
-        int maxAttempts = 1000;
-        int attempt = 0;
+        if (N <= 1) throw new IllegalArgumentException("N phai > 1");
+        if (L < 2 * (N + 1)) throw new IllegalArgumentException("L phai >= 2(N+1)");
 
-        while (attempt < maxAttempts)
-        {
-            // Sinh q (N bits)
-            BigInteger q = generateProbablePrime(N, random);
-            if (q == null)
-            {
-                attempt++;
-                continue;
-            }
-
-            // Sinh p = 2*q + 1 (L bits)
-            BigInteger p = q.multiply(TWO).add(ONE);
-
-            // Kiểm tra p có đúng L bits không
-            if (p.bitLength() != L)
-            {
-                attempt++;
-                continue;
-            }
-
-            // Kiểm tra p là prime
-            if (isProbablePrime(p, 20))
-            {
-                // Verify: q | (p-1)
-                BigInteger pMinus1 = p.subtract(ONE);
-                if (pMinus1.mod(q).equals(ZERO))
-                {
-                    return new BigInteger[]{p, q};
-                }
-            }
-
-            attempt++;
-        }
-
-        return null; // Không tìm được sau maxAttempts lần
-    }
-
-    /**
-     * Sinh số nguyên tố probable trong range
-     * Port từ sinh-so-an-toan.ipynb - Algorithm 1
-     */
-    private static BigInteger generateProbablePrime(int bitLength, SecureRandom random)
-    {
-        int maxAttempts = 100;
-        for (int i = 0; i < maxAttempts; i++)
-        {
-            BigInteger candidate = BigIntegers.createRandomBigInteger(bitLength, random);
-            
-            // Đảm bảo bit đầu tiên là 1 (để đạt bitLength)
-            candidate = candidate.setBit(bitLength - 1);
-            
-            // Đảm bảo là số lẻ
-            if (!candidate.testBit(0))
-            {
-                candidate = candidate.add(ONE);
-            }
-
-            if (isProbablePrime(candidate, 20))
-            {
-                return candidate;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Miller-Rabin primality test
-     * Port từ sinh-so-an-toan.ipynb
-     */
-    private static boolean isProbablePrime(BigInteger n, int k)
-    {
-        if (n.compareTo(TWO) < 0)
-        {
-            return false;
-        }
-        if (n.equals(TWO) || n.equals(THREE))
-        {
-            return true;
-        }
-        if (!n.testBit(0)) // n chẵn
-        {
-            return false;
-        }
-
-        // n - 1 = d * 2^r
-        BigInteger d = n.subtract(ONE);
-        int r = 0;
-        while (!d.testBit(0))
-        {
-            d = d.shiftRight(1);
-            r++;
-        }
-
-        // k rounds of Miller-Rabin
-        for (int i = 0; i < k; i++)
-        {
-            BigInteger a = BigIntegers.createRandomInRange(TWO, n.subtract(TWO), new SecureRandom());
-            BigInteger x = a.modPow(d, n);
-
-            if (x.equals(ONE) || x.equals(n.subtract(ONE)))
-            {
-                continue;
-            }
-
-            boolean composite = true;
-            for (int j = 0; j < r - 1; j++)
-            {
-                x = x.modPow(TWO, n);
-                if (x.equals(n.subtract(ONE)))
-                {
-                    composite = false;
-                    break;
-                }
-                if (x.equals(ONE))
-                {
-                    return false; // Composite
-                }
-            }
-
-            if (composite)
-            {
-                return false; // Composite
-            }
-        }
-
-        return true; // Probably prime
-    }
-
-    /**
-     * Thuật toán 2: Sinh đường cong ngẫu nhiên từ prime p và seed
-     * Port từ sinh-duong-cong-ngau-nhien.ipynb - Algorithm 1.1
-     * 
-     * @param p số nguyên tố
-     * @param seed_E seed (20 bytes)
-     * @return [a, b, r] với r là square root của b (nếu có)
-     */
-    public static BigInteger[] generateRandomCurve(BigInteger p, byte[] seed_E)
-    {
-        if (seed_E.length != 20)
-        {
-            throw new IllegalArgumentException("seed_E phải có độ dài 20 bytes");
-        }
-
-        // SHA-1 hash của seed_E
-        SHA1Digest sha1 = new SHA1Digest();
-        sha1.update(seed_E, 0, seed_E.length);
-        byte[] hash = new byte[sha1.getDigestSize()];
-        sha1.doFinal(hash, 0);
-
-        // Chuyển hash thành BigInteger
-        BigInteger hashInt = new BigInteger(1, hash);
-
-        // Algorithm 1.1: Sinh a, b, r
-        BigInteger a = hashInt.mod(p);
+        // [Buoc 1]: q <- Random(Prime(2^(N-1), 2^N - 1))
+        BigInteger minQ = ONE.shiftLeft(N - 1);
+        BigInteger maxQ = ONE.shiftLeft(N).subtract(ONE);
+        BigInteger q = randomPrimeInRange(minQ, maxQ, random, certainty);
         
-        // Tìm b sao cho b là quadratic residue mod p
-        BigInteger b = null;
-        BigInteger r = null;
-        int maxAttempts = 100;
-        
-        for (int i = 0; i < maxAttempts; i++)
+        if (q == null) throw new IllegalStateException("FATAL: Khong tim duoc q trong khoang N-bit");
+
+        // [Buoc 2]: f0 <- 2*q
+        BigInteger f = q.shiftLeft(1);
+        int M = f.bitLength();
+
+        // [Buoc 3]: k
+        int maxK = (L - M - 1) / N;
+        if (maxK < 1) maxK = 1;
+        int k = 1 + random.nextInt(maxK);
+
+        // [Buoc 4-5]: Sinh k-1 so nguyen to qi
+        for (int i = 1; i < k; i++)
         {
-            BigInteger candidate = hashInt.add(BigInteger.valueOf(i)).mod(p);
+            // 5.1: Ni random
+            int remainingBits = L - M - (k - i) * N - 1;
+            int lowerNi = N;
+            int upperNi = remainingBits < lowerNi ? lowerNi : remainingBits;
             
-            // Kiểm tra candidate là quadratic residue
-            if (legendreSymbol(candidate, p) == 1)
-            {
-                b = candidate;
-                r = modularSqrt(candidate, p);
-                break;
-            }
-        }
+            int Ni = lowerNi + random.nextInt(upperNi - lowerNi + 1);
 
-        if (b == null)
-        {
-            // Fallback: dùng hashInt trực tiếp
-            b = hashInt.mod(p);
-            r = null; // Không tìm được square root
-        }
-
-        return new BigInteger[]{a, b, r};
-    }
-
-    /**
-     * Legendre Symbol: (a/p)
-     * Port từ sinh-duong-cong-ngau-nhien.ipynb
-     */
-    private static int legendreSymbol(BigInteger a, BigInteger p)
-    {
-        BigInteger result = a.modPow(p.subtract(ONE).divide(TWO), p);
-        
-        if (result.equals(ONE))
-        {
-            return 1; // Quadratic residue
-        }
-        else if (result.equals(p.subtract(ONE)))
-        {
-            return -1; // Quadratic non-residue
-        }
-        else
-        {
-            return 0; // a ≡ 0 (mod p)
-        }
-    }
-
-    /**
-     * Tonelli-Shanks algorithm: Tìm square root modulo prime
-     * Port từ sinh-duong-cong-ngau-nhien.ipynb
-     */
-    private static BigInteger modularSqrt(BigInteger a, BigInteger p)
-    {
-        if (legendreSymbol(a, p) != 1)
-        {
-            return null; // Không có square root
-        }
-
-        if (a.equals(ZERO))
-        {
-            return ZERO;
-        }
-
-        if (p.equals(TWO))
-        {
-            return a;
-        }
-
-        // p ≡ 3 (mod 4)
-        if (p.mod(FOUR).equals(THREE))
-        {
-            return a.modPow(p.add(ONE).divide(FOUR), p);
-        }
-
-        // Tonelli-Shanks cho p ≡ 1 (mod 4)
-        // Tìm Q và S: p - 1 = Q * 2^S
-        BigInteger q = p.subtract(ONE);
-        int s = 0;
-        while (!q.testBit(0))
-        {
-            q = q.shiftRight(1);
-            s++;
-        }
-
-        // Tìm z (quadratic non-residue)
-        BigInteger z = TWO;
-        while (legendreSymbol(z, p) != -1)
-        {
-            z = z.add(ONE);
-        }
-
-        BigInteger m = BigInteger.valueOf(s);
-        BigInteger c = z.modPow(q, p);
-        BigInteger t = a.modPow(q, p);
-        BigInteger r = a.modPow(q.add(ONE).divide(TWO), p);
-
-        while (!t.equals(ONE))
-        {
-            BigInteger tt = t;
-            int i = 1;
-            while (i < s && !tt.equals(ONE))
-            {
-                tt = tt.modPow(TWO, p);
-                i++;
+            BigInteger lowerQi, upperQi;
+            
+            // 5.2 & 5.3: Xac dinh range cho qi
+            if (Ni == N) {
+                lowerQi = q; // Dam bao qi >= q
+                upperQi = ONE.shiftLeft(N).subtract(ONE);
+            } else {
+                lowerQi = ONE.shiftLeft(Ni - 1);
+                upperQi = ONE.shiftLeft(Ni).subtract(ONE);
             }
 
-            BigInteger b = c.modPow(TWO.modPow(BigInteger.valueOf(s - i - 1), p.subtract(ONE)), p);
-            m = BigInteger.valueOf(i);
-            r = r.multiply(b).mod(p);
-            t = t.multiply(b.modPow(TWO, p)).mod(p);
-            c = b.modPow(TWO, p);
-            s = i;
-        }
-
-        return r;
-    }
-
-    /**
-     * Thuật toán 3: Sinh domain parameters (G, n, h) với verify đầy đủ
-     * Improved version với BSGS và comprehensive verification
-     * 
-     * @param p số nguyên tố
-     * @param a hệ số a của đường cong
-     * @param b hệ số b của đường cong
-     * @param random nguồn random
-     * @return ECDomainParameters đã verify
-     */
-    public static ECDomainParameters generateDomainParameters(
-        BigInteger p, BigInteger a, BigInteger b, SecureRandom random)
-    {
-        // 1. Validate curve: 4a³ + 27b² ≠ 0 (mod p)
-        BigInteger fourA3 = FOUR.multiply(a.modPow(THREE, p)).mod(p);
-        BigInteger twentySevenB2 = TWENTY_SEVEN.multiply(b.modPow(TWO, p)).mod(p);
-        BigInteger discriminant = fourA3.add(twentySevenB2).mod(p);
-        
-        if (discriminant.equals(ZERO))
-        {
-            throw new IllegalArgumentException("Curve discriminant = 0, curve không hợp lệ!");
-        }
-
-        // 2. Tạo ECCurve
-        ECCurve.Fp curve = new ECCurve.Fp(p, a, b);
-
-        // 3. Tìm một điểm bất kỳ trên đường cong
-        ECPoint basePoint = findAnyPointOnCurve(curve, p, a, b, random);
-        if (basePoint == null)
-        {
-            throw new IllegalStateException("Không tìm được điểm nào trên đường cong!");
-        }
-
-        // 4. Tính order của điểm (n)
-        BigInteger n = computePointOrder(basePoint, curve, p, random);
-        if (n == null || n.compareTo(ONE) <= 0)
-        {
-            throw new IllegalStateException("Không tính được order hợp lệ của điểm!");
-        }
-
-        // 5. Tính approximate curve order
-        BigInteger curveOrderApprox = computeCurveOrderApprox(p);
-
-        // 6. Tính cofactor h
-        BigInteger h = curveOrderApprox.divide(n);
-        if (h.compareTo(ZERO) <= 0)
-        {
-            h = ONE;
-        }
-
-        // 7. Tìm generator point G với cofactor đúng
-        ECPoint G = findGeneratorWithCofactor(basePoint, n, h, curve, random);
-        if (G == null)
-        {
-            throw new IllegalStateException("Không tìm được generator point!");
-        }
-
-        // 8. Verify đầy đủ
-        if (!verifyDomainParameters(curve, G, n, h))
-        {
-            throw new IllegalStateException("Domain parameters không pass verification!");
-        }
-
-        // 9. Tạo ECDomainParameters
-        return new ECDomainParameters(curve, G, n, h, null);
-    }
-
-    /**
-     * Tìm một điểm bất kỳ trên đường cong y² = x³ + ax + b (mod p)
-     */
-    private static ECPoint findAnyPointOnCurve(
-        ECCurve.Fp curve, BigInteger p, BigInteger a, BigInteger b, SecureRandom random)
-    {
-        int maxAttempts = 1000;
-        
-        for (int i = 0; i < maxAttempts; i++)
-        {
-            // Chọn x ngẫu nhiên
-            BigInteger x = BigIntegers.createRandomInRange(ONE, p.subtract(ONE), random);
+            BigInteger qi = randomPrimeInRange(lowerQi, upperQi, random, certainty);
+            if (qi == null) throw new IllegalStateException("Khong tim duoc qi tai buoc i=" + i);
             
-            // Tính y² = x³ + ax + b (mod p)
-            BigInteger x3 = x.modPow(THREE, p);
-            BigInteger ax = a.multiply(x).mod(p);
-            BigInteger ySquared = x3.add(ax).add(b).mod(p);
-            
-            // Kiểm tra y² là quadratic residue
-            if (legendreSymbol(ySquared, p) == 1)
-            {
-                // Tìm y
-                BigInteger y = modularSqrt(ySquared, p);
-                if (y != null)
-                {
-                    // Tạo điểm
-                    return curve.createPoint(x, y);
-                }
+            // [Check]: Strict condition qi >= q
+            if (qi.compareTo(q) < 0) {
+                throw new IllegalStateException("ALGORITHM FAIL: qi < q.");
             }
+
+            // 5.4: f <- f * qi
+            f = f.multiply(qi);
+            M = f.bitLength();
         }
+
+        // [Buoc 6]: Tinh khoang [A, B] cho qk
+        BigInteger minP = ONE.shiftLeft(L - 1);
+        BigInteger maxP = ONE.shiftLeft(L).subtract(ONE);
         
-        return null;
-    }
+        BigInteger A = minP.divide(f);
+        if (minP.mod(f).signum() > 0) A = A.add(ONE); // Ceil
+        BigInteger B = maxP.divide(f);
 
-    /**
-     * Tính order của một điểm bằng BSGS (Baby-step Giant-step)
-     * Fallback về approximation cho order quá lớn
-     */
-    private static BigInteger computePointOrder(
-        ECPoint point, ECCurve curve, BigInteger p, SecureRandom random)
-    {
-        // Approximation: order nằm trong [p + 1 - 2√p, p + 1 + 2√p]
-        BigInteger pPlus1 = p.add(ONE);
-        BigInteger twoSqrtP = TWO.multiply(BigInteger.valueOf((long)Math.sqrt(p.doubleValue())));
-        BigInteger lowerBound = pPlus1.subtract(twoSqrtP).max(ONE);
-        BigInteger upperBound = pPlus1.add(twoSqrtP);
+        if (A.compareTo(B) > 0) throw new IllegalStateException("Khoang [A, B] rong.");
 
-        // Nếu range quá lớn (> 2^20), dùng approximation
-        BigInteger range = upperBound.subtract(lowerBound);
-        if (range.bitLength() > 20)
-        {
-            // Approximation: dùng Hasse bound
-            return pPlus1; // Approximation
-        }
-
-        // BSGS cho range nhỏ
-        return computePointOrderBSGS(point, lowerBound, upperBound);
-    }
-
-    /**
-     * Baby-step Giant-step algorithm để tính order
-     */
-    private static BigInteger computePointOrderBSGS(
-        ECPoint point, BigInteger lowerBound, BigInteger upperBound)
-    {
-        BigInteger range = upperBound.subtract(lowerBound);
-        int m = (int)Math.sqrt(range.doubleValue()) + 1;
+        // [Buoc 7 & 9]: Quet qk (Circular Scan Corrected)
+        BigInteger range = B.subtract(A).add(ONE);
+        BigInteger startOffset = new BigInteger(range.bitLength(), random).mod(range);
         
-        // Baby steps: lưu j*point
-        java.util.Map<ECPoint, BigInteger> babySteps = new java.util.HashMap<>();
-        ECPoint current = point;
-        for (BigInteger j = ONE; j.compareTo(BigInteger.valueOf(m)) <= 0; j = j.add(ONE))
-        {
-            babySteps.put(current, j);
-            current = current.add(point);
+        // Khoi tao startQk la so le
+        BigInteger startQk = A.add(startOffset);
+        if (!startQk.testBit(0)) startQk = startQk.add(ONE);
+        
+        // Dam bao startQk nam trong [A, B] sau khi chinh le
+        if (startQk.compareTo(B) > 0) {
+            startQk = A.testBit(0) ? A : A.add(ONE);
         }
 
-        // Giant steps: kiểm tra lowerBound + m*i
-        for (BigInteger i = ONE; i.compareTo(BigInteger.valueOf(m)) <= 0; i = i.add(ONE))
-        {
-            BigInteger k = lowerBound.add(i.multiply(BigInteger.valueOf(m)));
-            if (k.compareTo(upperBound) > 0)
-            {
-                break;
-            }
-            
-            ECPoint giantPoint = point.multiply(k);
-            ECPoint target = giantPoint.negate();
-            
-            if (babySteps.containsKey(target))
-            {
-                BigInteger j = babySteps.get(target);
-                BigInteger order = k.subtract(j);
-                if (order.compareTo(ONE) > 0)
-                {
-                    // Verify
-                    ECPoint verify = point.multiply(order);
-                    if (verify.isInfinity())
-                    {
-                        return order;
+        BigInteger qk = startQk;
+        boolean wrapped = false;
+
+        // Loop quet wrap-around
+        while (true) {
+            // Check prime
+            if (qk.isProbablePrime(certainty)) {
+                BigInteger p = f.multiply(qk).add(ONE);
+                
+                if (p.bitLength() == L && p.isProbablePrime(certainty)) {
+                    if (qk.compareTo(q) >= 0) {
+                        // [Verify Final]: Defense-in-depth
+                        BigInteger pMinus1 = p.subtract(ONE);
+                        if (!pMinus1.mod(f).equals(ZERO)) throw new IllegalStateException("Check Fail: f not divide p-1");
+                        if (!pMinus1.mod(q).equals(ZERO)) throw new IllegalStateException("Check Fail: q not divide p-1");
+                        
+                        return new BigInteger[]{p, q};
                     }
                 }
             }
-        }
 
-        // Fallback: thử các giá trị trong range (giới hạn để tránh quá chậm)
-        BigInteger maxFallback = lowerBound.add(BigInteger.valueOf(Math.min(10000, range.longValue())));
-        for (BigInteger k = lowerBound; k.compareTo(maxFallback) <= 0; k = k.add(ONE))
-        {
-            ECPoint test = point.multiply(k);
-            if (test.isInfinity())
-            {
-                return k;
+            // Next candidate (+2)
+            qk = qk.add(TWO);
+            
+            // Wrap around logic
+            if (qk.compareTo(B) > 0) {
+                qk = A;
+                if (!qk.testBit(0)) qk = qk.add(ONE);
+                wrapped = true; 
+            }
+
+            // [STOP CONDITION]: Check dung sau khi da Next va Wrap
+            // Neu quay lai dung startQk thi dung (da quet het 1 vong)
+            if (wrapped && qk.equals(startQk)) {
+                throw new IllegalStateException("Da duyet het khoang [A, B] ma khong tim duoc safe prime p.");
             }
         }
-
-        return null;
     }
 
     /**
-     * Tính approximate curve order (Hasse bound)
+     * Thuật toán 1: Random(Prime(A,B)) - Logic quet chuan
      */
-    private static BigInteger computeCurveOrderApprox(BigInteger p)
-    {
-        // Hasse bound: #E(Fp) ≈ p + 1
-        return p.add(ONE);
+    private static BigInteger randomPrimeInRange(BigInteger min, BigInteger max, SecureRandom random, int certainty) {
+        if (min.compareTo(max) > 0) return null;
+        
+        BigInteger range = max.subtract(min).add(ONE);
+        BigInteger startOffset = new BigInteger(range.bitLength(), random).mod(range);
+        
+        // Start p (le)
+        BigInteger startP = min.add(startOffset);
+        if (!startP.testBit(0)) startP = startP.add(ONE);
+        if (startP.compareTo(max) > 0) {
+            startP = min.testBit(0) ? min : min.add(ONE);
+        }
+        
+        BigInteger p = startP;
+        boolean wrapped = false;
+
+        while (true) {
+            // Check prime
+            if (p.isProbablePrime(certainty)) {
+                return p;
+            }
+            
+            // Next (+2)
+            p = p.add(TWO);
+            
+            // Wrap
+            if (p.compareTo(max) > 0) {
+                p = min;
+                if (!p.testBit(0)) p = p.add(ONE);
+                wrapped = true;
+            }
+
+            // [STOP CONDITION]: Check dung sau khi da Next va Wrap
+            if (wrapped && p.equals(startP)) {
+                return null; // Khong co so nguyen to trong khoang
+            }
+        }
     }
 
-    /**
-     * Tìm generator point G với cofactor đúng
-     */
-    private static ECPoint findGeneratorWithCofactor(
-        ECPoint basePoint, BigInteger n, BigInteger h, ECCurve curve, SecureRandom random)
-    {
-        // Nếu h = 1, basePoint có thể đã là generator
-        if (h.equals(ONE))
-        {
-            // Verify order của basePoint
-            ECPoint test = basePoint.multiply(n);
-            if (test.isInfinity() && hasCorrectOrder(basePoint, n))
-            {
-                return basePoint;
-            }
-        }
+    // =================================================================
+    // PHẦN 2: VERIFIABLE RANDOM CURVE (ANSI X9.62 Fixed)
+    // =================================================================
 
-        // Nếu h > 1, nhân basePoint với h để được generator
-        if (h.compareTo(ONE) > 0)
-        {
-            ECPoint G = basePoint.multiply(h);
-            
-            // Verify: n * G = O
-            ECPoint verify = G.multiply(n);
-            if (verify.isInfinity() && hasCorrectOrder(G, n))
-            {
-                return G;
-            }
-        }
+    public static RawCurveData generateRawCurve(BigInteger p, SecureRandom random) {
+        int t = p.bitLength();
+        int s = (t - 1) / 160; 
+        int v = t - 160 * s;
+        int g = 160;
+        byte[] seedE = new byte[g/8];
+        
+        // ANSI X9.62: Fix a = -3 (mod p) for efficiency
+        BigInteger a = p.subtract(THREE);
 
-        // Fallback: thử các điểm mới
-        int maxAttempts = 100;
-        for (int i = 0; i < maxAttempts; i++)
-        {
-            BigInteger k = BigIntegers.createRandomInRange(ONE, n.subtract(ONE), random);
-            ECPoint candidate = basePoint.multiply(k);
+        while (true) {
+            random.nextBytes(seedE);
             
-            if (h.compareTo(ONE) > 0)
-            {
-                candidate = candidate.multiply(h);
-            }
+            // 1. Sinh r tu seed
+            BigInteger r = hashSeedToR(seedE, p, s, v, g);
             
-            if (hasCorrectOrder(candidate, n))
-            {
-                ECPoint verify = candidate.multiply(n);
-                if (verify.isInfinity())
-                {
-                    return candidate;
-                }
-            }
-        }
+            if (r.signum() == 0) continue;
+            // [Check]: r < p (Paper-friendly check)
+            if (r.compareTo(p) >= 0) continue;
 
-        return basePoint; // Fallback
+            // 2. Tinh b: r * b^2 = a^3 -> b^2 = a^3 * r^-1
+            BigInteger rInv = r.modInverse(p);
+            BigInteger a3 = a.modPow(THREE, p);
+            BigInteger rhs = a3.multiply(rInv).mod(p);
+
+            // Check Legendre (co phai so chinh phuong khong)
+            if (legendre(rhs, p) != 1) continue;
+
+            // Tinh can bac hai: b = sqrt(rhs)
+            BigInteger b = modularSqrt(rhs, p);
+            
+            // [Safety Check]: Defensive null check
+            if (b == null) continue;
+            
+            // 3. Check Discriminant: 4a^3 + 27b^2 != 0
+            BigInteger term1 = FOUR.multiply(a3).mod(p);
+            BigInteger b2 = b.modPow(TWO, p);
+            BigInteger term2 = TWENTY_SEVEN.multiply(b2).mod(p);
+            BigInteger disc = term1.add(term2).mod(p);
+
+            if (disc.equals(ZERO)) continue;
+
+            return new RawCurveData(p, a, b, seedE);
+        }
     }
 
-    /**
-     * Kiểm tra điểm có order chính xác không
-     */
-    private static boolean hasCorrectOrder(ECPoint point, BigInteger targetOrder)
-    {
-        // Verify: targetOrder * point = O
-        ECPoint verify = point.multiply(targetOrder);
-        if (!verify.isInfinity())
-        {
+    public static boolean verifyRandomCurveFp(BigInteger p, byte[] seedE, BigInteger a, BigInteger b) {
+        try {
+            // 1. Check a = -3
+            BigInteger expectedA = p.subtract(THREE);
+            if (!a.equals(expectedA)) return false;
+
+            int t = p.bitLength();
+            int s = (t - 1) / 160; 
+            int v = t - 160 * s;
+            int g = seedE.length * 8;
+            
+            // 2. Re-compute r
+            BigInteger r = hashSeedToR(seedE, p, s, v, g);
+            if (r.signum() == 0 || r.compareTo(p) >= 0) return false;
+
+            // 3. Check equation: r * b^2 == a^3
+            BigInteger b2 = b.modPow(TWO, p);
+            BigInteger lhs = r.multiply(b2).mod(p);
+            BigInteger rhs = a.modPow(THREE, p);
+
+            return lhs.equals(rhs);
+        } catch (Exception e) {
             return false;
         }
-
-        // Kiểm tra các ước số nhỏ
-        BigInteger[] smallPrimes = {
-            TWO, THREE, BigInteger.valueOf(5),
-            BigInteger.valueOf(7), BigInteger.valueOf(11), BigInteger.valueOf(13)
-        };
-
-        for (BigInteger prime : smallPrimes)
-        {
-            if (targetOrder.mod(prime).equals(ZERO))
-            {
-                BigInteger subOrder = targetOrder.divide(prime);
-                ECPoint test = point.multiply(subOrder);
-                if (test.isInfinity())
-                {
-                    return false; // Có order nhỏ hơn
-                }
-            }
-        }
-
-        return true;
     }
 
-    /**
-     * Verify đầy đủ domain parameters
-     */
-    private static boolean verifyDomainParameters(
-        ECCurve curve, ECPoint G, BigInteger n, BigInteger h)
-    {
-        try
-        {
-            // 1. G không phải điểm vô cực
-            if (G.isInfinity())
-            {
-                return false;
-            }
+    private static BigInteger hashSeedToR(byte[] seedE, BigInteger p, int s, int v, int g) {
+        byte[] H = sha1(seedE);
+        BigInteger c0 = new BigInteger(1, H);
+        BigInteger maskV = ONE.shiftLeft(v).subtract(ONE);
+        BigInteger W0 = c0.and(maskV);
+        if (v > 0) W0 = W0.clearBit(v - 1); 
 
-            // 2. G nằm trên đường cong
-            if (!G.isValid())
-            {
-                return false;
-            }
-
-            // 3. n * G = O
-            ECPoint verify = G.multiply(n);
-            if (!verify.isInfinity())
-            {
-                return false;
-            }
-
-            // 4. G có order chính xác
-            if (!hasCorrectOrder(G, n))
-            {
-                return false;
-            }
-
-            // 5. n > 1
-            if (n.compareTo(ONE) <= 0)
-            {
-                return false;
-            }
-
-            // 6. h >= 1
-            if (h.compareTo(ONE) < 0)
-            {
-                return false;
-            }
-
-            return true;
+        BigInteger z = new BigInteger(1, seedE);
+        BigInteger W = W0;
+        
+        for (int i = 1; i <= s; i++) {
+            BigInteger si_val = z.add(BigInteger.valueOf(i)).mod(ONE.shiftLeft(g));
+            byte[] si_bytes = BigIntegers.asUnsignedByteArray(g/8, si_val);
+            BigInteger Wi = new BigInteger(1, sha1(si_bytes));
+            W = W.shiftLeft(160).add(Wi);
         }
-        catch (Exception e)
-        {
-            return false;
+        return W;
+    }
+
+    // =================================================================
+    // PHẦN 3: MATH UTILS (Robust Tonelli-Shanks)
+    // =================================================================
+
+    /**
+     * Tonelli-Shanks voi kieu int cho so mu (safe implementation)
+     */
+    public static BigInteger modularSqrt(BigInteger a, BigInteger p) {
+        if (legendre(a, p) != 1) return null;
+        if (a.equals(ZERO)) return ZERO;
+        if (p.equals(TWO)) return a;
+
+        // Case p = 3 mod 4
+        if (p.mod(FOUR).equals(THREE)) {
+            return a.modPow(p.add(ONE).shiftRight(2), p);
+        }
+
+        // Case p = 1 mod 4 (Tonelli-Shanks)
+        // 1. p - 1 = q * 2^s
+        int s = 0;
+        BigInteger q = p.subtract(ONE);
+        while (!q.testBit(0)) {
+            s++;
+            q = q.shiftRight(1);
+        }
+        
+        // 2. Tim z non-residue
+        BigInteger z = TWO;
+        while (legendre(z, p) != -1) z = z.add(ONE);
+
+        // 3. Khoi tao
+        BigInteger c = z.modPow(q, p);
+        BigInteger r = a.modPow(q.add(ONE).shiftRight(1), p);
+        BigInteger t = a.modPow(q, p);
+        int m = s;
+
+        // 4. Loop
+        while (!t.equals(ONE)) {
+            BigInteger tt = t;
+            int i = 0;
+            
+            // Tim i nho nhat de t^(2^i) = 1
+            while (!tt.equals(ONE)) {
+                tt = tt.modPow(TWO, p);
+                i++;
+                if (i == m) return null; // Should not happen
+            }
+            
+            // Tinh b = c^(2^(m-i-1))
+            // Dung int cho so mu de tranh overflow/logic sai voi BigInteger
+            int e = m - i - 1;
+            BigInteger b = c.modPow(ONE.shiftLeft(e), p);
+            
+            m = i;
+            c = b.modPow(TWO, p); // c = b^2
+            t = t.multiply(c).mod(p);
+            r = r.multiply(b).mod(p);
+        }
+        return r;
+    }
+
+    private static int legendre(BigInteger a, BigInteger p) {
+        if (a.mod(p).equals(ZERO)) return 0;
+        BigInteger res = a.modPow(p.subtract(ONE).shiftRight(1), p);
+        if (res.equals(ONE)) return 1;
+        if (res.equals(p.subtract(ONE))) return -1;
+        return 0;
+    }
+
+    private static byte[] sha1(byte[] input) {
+        SHA1Digest d = new SHA1Digest();
+        d.update(input, 0, input.length);
+        byte[] out = new byte[d.getDigestSize()];
+        d.doFinal(out, 0);
+        return out;
+    }
+
+    public static class RawCurveData {
+        public final BigInteger p, a, b;
+        public final byte[] seedE;
+        public RawCurveData(BigInteger p, BigInteger a, BigInteger b, byte[] seed) {
+            this.p = p; this.a = a; this.b = b; this.seedE = seed;
         }
     }
 }
-

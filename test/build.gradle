@@ -10,3 +10,12 @@ dependencies {
   testImplementation group: 'junit', name: 'junit', version: '4.11'
 }
 
+// Task để chạy CustomCurveExample
+task runExample(type: JavaExec) {
+    group = 'application'
+    description = 'Runs the CustomCurveExample'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.bouncycastle.examples.CustomCurveExample'
+    standardInput = System.in
+}
+
