@@ -23,9 +23,11 @@ println("Environment setup:")
 })
 
 
-if (JavaVersion.current().isJava8Compatible()) {
     allprojects {
         tasks.withType(Javadoc) {
+        options.encoding = 'UTF-8'
+        options.charSet = 'UTF-8'
+        if (JavaVersion.current().isJava8Compatible()) {
             options.addStringOption('Xdoclint:none', '-quiet')
         }
     }

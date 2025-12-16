@@ -47,7 +47,8 @@ public class CustomCurveExample
         ECDomainParameters params = CustomCurveManager.generateAndRegisterCurve(
             curveName, L, N, maxAttempts, sageScriptPath);
         
-        if (params == null) {
+        if (params == null)
+        {
             System.err.println("Failed to generate curve after " + maxAttempts + " attempts.");
             System.err.println("Try increasing maxAttempts or using different parameters.");
             return;
@@ -94,9 +95,12 @@ public class CustomCurveExample
         verifier.update(message);
         boolean valid = verifier.verify(signature);
         
-        if (valid) {
+        if (valid)
+        {
             System.out.println("Signature verification: SUCCESS");
-        } else {
+        }
+        else
+        {
             System.out.println("Signature verification: FAILED");
         }
         

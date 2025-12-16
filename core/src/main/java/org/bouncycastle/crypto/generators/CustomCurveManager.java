@@ -21,7 +21,8 @@ public class CustomCurveManager
     /**
      * Kết quả trả về từ SageMath
      */
-    public static class SageMathResult {
+    public static class SageMathResult
+    {
         public BigInteger n;
         public BigInteger h;
         public BigInteger Gx;
@@ -31,7 +32,8 @@ public class CustomCurveManager
         public boolean hIsOne;
         public String error;
 
-        public boolean hasError() {
+        public boolean hasError()
+        {
             return error != null && !error.trim().isEmpty() && !"none".equalsIgnoreCase(error.trim());
         }
     }
@@ -40,7 +42,8 @@ public class CustomCurveManager
      * PHASE A: Sinh Raw Curve (p, a, b, seed).
      * Kết quả chưa dùng được ngay vì thiếu n, h, G.
      */
-    public static CustomECGenerator.RawCurveData generateRawCurveSteps(int L, int N) {
+    public static CustomECGenerator.RawCurveData generateRawCurveSteps(int L, int N)
+    {
         SecureRandom random = new SecureRandom();
         System.out.println("--- STEP 1: Generating Safe Prime & Raw Curve ---");
 
@@ -68,18 +71,22 @@ public class CustomCurveManager
      * FIX: kiểm tra script path tồn tại.
      */
     public static SageMathResult callSageMathForOrder(
-            BigInteger p, BigInteger a, BigInteger b, String sageScriptPath) {
+            BigInteger p, BigInteger a, BigInteger b, String sageScriptPath)
+    {
 
         SageMathResult result = new SageMathResult();
 
-        try {
+        try
+        {
             // Default path
-            if (sageScriptPath == null) {
+            if (sageScriptPath == null)
+            {
                 sageScriptPath = "test/scripts/compute_order_complete.py";
             }
 
             File scriptFile = new File(sageScriptPath);
-            if (!scriptFile.exists()) {
+            if (!scriptFile.exists())
+            {
                 result.error = "Sage script not found: " + sageScriptPath;
                 return result;
             }
@@ -114,23 +121,27 @@ public class CustomCurveManager
             // Đọc output
             StringBuilder output = new StringBuilder();
             try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
+                    new InputStreamReader(process.getInputStream())))
+            {
                 String line;
-                while ((line = reader.readLine()) != null) {
+                while ((line = reader.readLine()) != null)
+                {
                     output.append(line).append("\n");
                 }
             }
 
             // Timeout 300 giây
             boolean ok = process.waitFor(3600, TimeUnit.SECONDS);
-            if (!ok) {
+            if (!ok)
+            {
                 process.destroyForcibly();
                 result.error = "SageMath timeout";
                 return result;
             }
 
             int exitCode = process.exitValue();
-            if (exitCode != 0) {
+            if (exitCode != 0)
+            {
                 result.error = "SageMath process exited with code: " + exitCode;
                 return result;
             }
@@ -139,7 +150,9 @@ public class CustomCurveManager
             String jsonStr = output.toString().trim();
             result = parseSageMathJSON(jsonStr);
 
-        } catch (Exception e) {
+        }
+        catch (Exception e)
+        {
             result.error = "Error calling SageMath: " + e.getMessage();
             e.printStackTrace();
         }
@@ -150,23 +163,35 @@ public class CustomCurveManager
     /**
      * Helper: lấy value theo key từ JSON một dòng.
      */
-    private static String pickString(String json, String key) {
+    private static String pickString(String json, String key)
+    {
         Matcher m = Pattern.compile(
             "\"" + Pattern.quote(key) + "\"\\s*:\\s*(null|\"(.*?)\"|[^,}\\s]+)"
         ).matcher(json);
-        if (!m.find()) return null;
+        if (!m.find())
+        {
+            return null;
+        }
         String raw = m.group(1);
-        if ("null".equals(raw)) return null;
-        if (raw.startsWith("\"")) return m.group(2); // value inside quotes
+        if ("null".equals(raw))
+        {
+            return null;
+        }
+        if (raw.startsWith("\""))
+        {
+            return m.group(2); // value inside quotes
+        }
         return raw; // bare value
     }
 
     /**
      * Parse JSON output từ SageMath (one-line).
      */
-    private static SageMathResult parseSageMathJSON(String jsonStr) {
+    private static SageMathResult parseSageMathJSON(String jsonStr)
+    {
         SageMathResult result = new SageMathResult();
-        try {
+        try
+        {
             jsonStr = jsonStr.replaceAll("\\s+", " ").trim();
 
             String nStr      = pickString(jsonStr, "n");
@@ -187,7 +212,9 @@ public class CustomCurveManager
             if (hOneStr != null)   result.hIsOne = Boolean.parseBoolean(hOneStr);
             result.error = errStr; // có thể null
 
-        } catch (Exception e) {
+        }
+        catch (Exception e)
+        {
             result.error = "Error parsing JSON: " + e.getMessage();
         }
         return result;
@@ -202,11 +229,13 @@ public class CustomCurveManager
             BigInteger n,
             BigInteger h,
             BigInteger Gx,
-            BigInteger Gy) {
+            BigInteger Gy)
+    {
 
         System.out.println("\n--- STEP 2: Finalizing & Validating Curve (with G from SageMath) ---");
 
-        if (n == null || h == null || Gx == null || Gy == null) {
+        if (n == null || h == null || Gx == null || Gy == null)
+        {
             throw new IllegalArgumentException("REJECT: Missing parameters from SageMath.");
         }
 
@@ -215,7 +244,8 @@ public class CustomCurveManager
         BigInteger b = raw.b;
 
         // 1) Verify seed -> (a,b)
-        if (!CustomECGenerator.verifyRandomCurveFp(p, raw.seedE, a, b)) {
+        if (!CustomECGenerator.verifyRandomCurveFp(p, raw.seedE, a, b))
+        {
             throw new SecurityException("REJECT: Curve parameters a,b do not match seed!");
         }
 
@@ -224,25 +254,30 @@ public class CustomCurveManager
         // 2) Tạo G
         ECPoint G = curve.createPoint(Gx, Gy);
 
-        if (G.isInfinity()) {
+        if (G.isInfinity())
+        {
             throw new IllegalStateException("REJECT: G from SageMath is infinity!");
         }
-        if (!G.isValid()) {
+        if (!G.isValid())
+        {
             throw new IllegalStateException("REJECT: G from SageMath is not on curve!");
         }
 
         // 3) n prime
-        if (!n.isProbablePrime(40)) {
+        if (!n.isProbablePrime(40))
+        {
             throw new IllegalArgumentException("REJECT: Provided order n is NOT prime.");
         }
 
         // 4) h == 1 (strict requirement)
-        if (!h.equals(BigInteger.ONE)) {
+        if (!h.equals(BigInteger.ONE))
+        {
             throw new IllegalArgumentException("REJECT: Cofactor h != 1. h = " + h);
         }
 
         // 5) n * G = O
-        if (!G.multiply(n).isInfinity()) {
+        if (!G.multiply(n).isInfinity())
+        {
             throw new IllegalArgumentException("REJECT: Invalid order! n * G != O.");
         }
 
@@ -262,22 +297,46 @@ public class CustomCurveManager
      * Tự động check file đã lưu trước, nếu có thì load luôn, không cần sinh lại.
      */
     public static ECDomainParameters generateAndRegisterCurve(
-            String curveName, int L, int N, int maxAttempts, String sageScriptPath) {
+            String curveName, int L, int N, int maxAttempts, String sageScriptPath)
+    {
 
-        // Đường dẫn file lưu curve
-        String curveDir = "curves";
-        String curveFile = curveDir + "/" + curveName + ".json";
+        // Đường dẫn file lưu curve - tự động tìm từ nhiều vị trí
+        String curveFile = null;
+        String[] possiblePaths = {
+            "curves/" + curveName + ".json",  // relative to current dir
+            System.getProperty("user.dir") + "/curves/" + curveName + ".json",  // from working dir
+            "D:/Build_ECDSA/curves/" + curveName + ".json"  // absolute fallback
+        };
+
+        for (String path : possiblePaths)
+        {
+            File testFile = new File(path);
+            if (testFile.exists())
+            {
+                curveFile = path;
+                break;
+            }
+        }
+
+        if (curveFile == null)
+        {
+            curveFile = "curves/" + curveName + ".json";  // default fallback
+        }
         
         // BƯỚC 1: Kiểm tra file đã tồn tại chưa
-        try {
+        try
+        {
             ECDomainParameters loaded = loadCurveFromFile(curveFile);
-            if (loaded != null) {
+            if (loaded != null)
+            {
                 System.out.println("========================================");
                 System.out.println("Using existing curve from file: " + curveFile);
                 System.out.println("========================================");
                 return loaded;
             }
-        } catch (Exception e) {
+        }
+        catch (Exception e)
+        {
             System.out.println("Could not load curve from file: " + e.getMessage());
             System.out.println("Will generate new curve...");
         }
@@ -295,10 +354,12 @@ public class CustomCurveManager
 
         SecureRandom random = new SecureRandom();
 
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
             System.out.println("--- Attempt " + attempt + "/" + maxAttempts + " ---");
 
-            try {
+            try
+            {
                 // PHASE A
                 System.out.println("PHASE A: Generating raw curve...");
                 BigInteger[] pq = CustomECGenerator.generateSafePrime(L, N, random, 80);
@@ -314,9 +375,11 @@ public class CustomCurveManager
                 System.out.println("\nPHASE B: Calling SageMath to compute order...");
                 SageMathResult sageResult = callSageMathForOrder(raw.p, raw.a, raw.b, sageScriptPath);
 
-                if (sageResult.hasError()) {
+                if (sageResult.hasError())
+                {
                     System.out.println("  ERROR: " + sageResult.error);
-                    if (sageResult.error != null && sageResult.error.contains("h != 1")) {
+                    if (sageResult.error != null && sageResult.error.contains("h != 1"))
+                    {
                         System.out.println("  → Ncurve is not prime, trying new seed...");
                     }
                     continue; // Thử seed khác
@@ -324,7 +387,8 @@ public class CustomCurveManager
 
                 // Guard: đảm bảo không null trước khi in
                 if (sageResult.n == null || sageResult.h == null
-                    || sageResult.Gx == null || sageResult.Gy == null) {
+                    || sageResult.Gx == null || sageResult.Gy == null)
+                {
                     System.out.println("  ERROR: Missing fields from Sage output.");
                     continue; // Thử seed khác
                 }
@@ -338,11 +402,13 @@ public class CustomCurveManager
                 System.out.println("  h is one: " + sageResult.hIsOne);
 
                 // Chỉ nhận h=1 và n prime
-                if (!sageResult.hIsOne) {
+                if (!sageResult.hIsOne)
+                {
                     System.out.println("  REJECT: h != 1, trying new seed...");
                     continue;
                 }
-                if (!sageResult.nIsPrime) {
+                if (!sageResult.nIsPrime)
+                {
                     System.out.println("  REJECT: n is not prime, trying new seed...");
                     continue;
                 }
@@ -353,9 +419,12 @@ public class CustomCurveManager
                     raw, sageResult.n, sageResult.h, sageResult.Gx, sageResult.Gy);
 
                 // BƯỚC 3: Lưu curve vào file
-                try {
+                try
+                {
                     saveCurveToFile(params, curveName, curveFile);
-                } catch (IOException e) {
+                }
+                catch (IOException e)
+                {
                     System.err.println("Warning: Could not save curve to file: " + e.getMessage());
                 }
 
@@ -364,7 +433,9 @@ public class CustomCurveManager
 
                 return params;
 
-            } catch (Exception e) {
+            }
+            catch (Exception e)
+            {
                 System.out.println("  ERROR in attempt " + attempt + ": " + e.getMessage());
                 e.printStackTrace();
                 continue; // Thử lại
@@ -377,14 +448,16 @@ public class CustomCurveManager
     }
 
     // Helper in Hex chuẩn
-    private static void printHex(String label, BigInteger val) {
+    private static void printHex(String label, BigInteger val)
+    {
         System.out.println(label + ": " + Hex.toHexString(BigIntegers.asUnsignedByteArray(val)));
     }
 
     /**
      * Lưu curve parameters vào file JSON
      */
-    public static void saveCurveToFile(ECDomainParameters params, String curveName, String filePath) throws IOException {
+    public static void saveCurveToFile(ECDomainParameters params, String curveName, String filePath) throws IOException
+    {
         ECCurve.Fp curve = (ECCurve.Fp) params.getCurve();
         BigInteger p = curve.getQ();  // modulus
         BigInteger a = curve.getA().toBigInteger();
@@ -406,7 +479,8 @@ public class CustomCurveManager
         json.append("  \"Gy\": \"").append(Gy.toString(16)).append("\",\n");
         json.append("  \"n\": \"").append(n.toString(16)).append("\",\n");
         json.append("  \"h\": \"").append(h.toString()).append("\"");
-        if (seed != null && seed.length > 0) {
+        if (seed != null && seed.length > 0)
+        {
             json.append(",\n  \"seed\": \"").append(Hex.toHexString(seed)).append("\"");
         }
         json.append("\n}");
@@ -414,7 +488,8 @@ public class CustomCurveManager
         // Tạo thư mục nếu chưa có
         File file = new File(filePath);
         File parentDir = file.getParentFile();
-        if (parentDir != null && !parentDir.exists()) {
+        if (parentDir != null && !parentDir.exists())
+        {
             parentDir.mkdirs();
         }
         
@@ -428,9 +503,11 @@ public class CustomCurveManager
     /**
      * Load curve parameters từ file JSON
      */
-    public static ECDomainParameters loadCurveFromFile(String filePath) throws IOException {
+    public static ECDomainParameters loadCurveFromFile(String filePath) throws IOException
+    {
         File file = new File(filePath);
-        if (!file.exists()) {
+        if (!file.exists())
+        {
             return null;
         }
         
@@ -448,7 +525,8 @@ public class CustomCurveManager
         String seedStr = extractJsonValue(content, "seed");
         
         if (pStr == null || aStr == null || bStr == null || GxStr == null || 
-            GyStr == null || nStr == null || hStr == null) {
+            GyStr == null || nStr == null || hStr == null)
+        {
             throw new IOException("Invalid curve file: missing required fields");
         }
         
@@ -466,10 +544,12 @@ public class CustomCurveManager
         ECPoint G = curve.createPoint(Gx, Gy);
         
         // Verify
-        if (!G.isValid()) {
+        if (!G.isValid())
+        {
             throw new IOException("Invalid curve file: G is not on curve");
         }
-        if (!G.multiply(n).isInfinity()) {
+        if (!G.multiply(n).isInfinity())
+        {
             throw new IOException("Invalid curve file: n*G != O");
         }
         
@@ -480,10 +560,12 @@ public class CustomCurveManager
     /**
      * Helper: Extract value từ JSON string
      */
-    private static String extractJsonValue(String json, String key) {
+    private static String extractJsonValue(String json, String key)
+    {
         Pattern pattern = Pattern.compile("\"" + Pattern.quote(key) + "\"\\s*:\\s*\"([^\"]+)\"");
         Matcher matcher = pattern.matcher(json);
-        if (matcher.find()) {
+        if (matcher.find())
+        {
             return matcher.group(1);
         }
         return null;
