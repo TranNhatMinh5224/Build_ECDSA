@@ -23,9 +23,11 @@ println("Environment setup:")
 })
 
 
-if (JavaVersion.current().isJava8Compatible()) {
     allprojects {
         tasks.withType(Javadoc) {
+        options.encoding = 'UTF-8'
+        options.charSet = 'UTF-8'
+        if (JavaVersion.current().isJava8Compatible()) {
             options.addStringOption('Xdoclint:none', '-quiet')
         }
     }
@@ -247,12 +249,73 @@ subprojects {
 
     tasks.withType(JavaCompile).configureEach {
         options.debug = true;
+        options.compilerArgs += ['-Xlint:all', '-Xlint:-processing']
+        options.encoding = 'UTF-8'
+        
+        // Log chi tiết khi compile
+        doFirst {
+            logger.lifecycle("Compiling ${sourceSets.main.java.srcDirs} with Java ${JavaVersion.current()}")
+        }
+        
+        // Log lỗi compile
+        doLast {
+            if (didWork) {
+                logger.lifecycle("✅ Compiled ${sourceSets.main.java.srcDirs}")
+            } else {
+                logger.error("❌ Compilation failed for ${sourceSets.main.java.srcDirs}")
+            }
+        }
     }
 
     tasks.withType(Test).configureEach {
         reports {
             junitXml.outputLocation = layout.buildDirectory.dir("test-results")
         }
+        
+        // Log chi tiết khi test
+        testLogging {
+            events "failed", "skipped", "passed"
+            exceptionFormat "full"
+            showStandardStreams = true
+            showCauses = true
+            showStackTraces = true
+        }
+    }
+}
+
+// ==========================================
+// CẤU HÌNH LOGGING CHO BUILD
+// ==========================================
+
+// Task để xem log build
+task showBuildLog {
+    doLast {
+        def logDir = file("build_logs")
+        if (logDir.exists()) {
+            def logFiles = logDir.listFiles({ file -> file.name.endsWith('.log') } as FileFilter)
+            if (logFiles && logFiles.length > 0) {
+                def latestLog = logFiles.max { it.lastModified() }
+                println "Latest build log: ${latestLog.absolutePath}"
+                println "=========================================="
+                latestLog.eachLine { line ->
+                    println line
+                }
+            } else {
+                println "No log files found in build_logs/"
+            }
+        } else {
+            println "Log directory build_logs/ does not exist"
+        }
+    }
+}
+
+// Task để clean logs cũ
+task cleanLogs(type: Delete) {
+    delete "build_logs"
+    delete "logs"
+    delete "custom_curves"
+    doLast {
+        println "✅ Đã xóa tất cả logs và cache"
     }
 }
 

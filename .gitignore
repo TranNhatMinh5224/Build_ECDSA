@@ -29,3 +29,34 @@ codesigning.jks
 /prov/src/main/core/
 
 bc-build.user.properties
+
+custom_curves/
+*.params
+
+# Build logs
+build_logs/
+logs/
+*.log
+
+# Test files and directories (root level only)
+/test-ejbca-lib/
+/backup_*/
+/Test*.java
+/Test*.class
+/test-ejbca-*/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# IDE specific
+.vscode/
+*.code-workspace
+
+# OS specific
+.DS_Store
+Thumbs.db
+desktop.ini

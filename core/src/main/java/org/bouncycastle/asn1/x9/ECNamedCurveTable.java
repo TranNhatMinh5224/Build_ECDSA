@@ -60,6 +60,11 @@ public class ECNamedCurveTable
             ecP = GMNamedCurves.getByName(name);
         }
 
+        if (ecP == null)
+        {
+            ecP = CustomNamedCurves.getByName(name);
+        }
+
         return ecP;
     }
 
@@ -95,6 +100,11 @@ public class ECNamedCurveTable
         if (null == holder)
         {
             holder = GMNamedCurves.getByNameLazy(name);
+        }
+
+        if (null == holder)
+        {
+            holder = CustomNamedCurves.getByNameLazy(name);
         }
 
         return holder;
@@ -139,6 +149,11 @@ public class ECNamedCurveTable
         if (oid == null)
         {
             oid = GMNamedCurves.getOID(name);
+        }
+
+        if (oid == null)
+        {
+            oid = CustomNamedCurves.getOID(name);
         }
 
         if (oid == null && name.equals("curve25519"))
@@ -238,6 +253,11 @@ public class ECNamedCurveTable
             ecP = GMNamedCurves.getByOID(oid);
         }
 
+        if (ecP == null)
+        {
+            ecP = CustomNamedCurves.getByOID(oid);
+        }
+
         return ecP;
     }
 
@@ -270,6 +290,11 @@ public class ECNamedCurveTable
         if (null == holder)
         {
             holder = GMNamedCurves.getByOIDLazy(oid);
+        }
+
+        if (null == holder)
+        {
+            holder = CustomNamedCurves.getByOIDLazy(oid);
         }
 
         return holder;
